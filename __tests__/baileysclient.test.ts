@@ -1,31 +1,28 @@
-import makeWASocket, { downloadMediaMessage, fetchLatestBaileysVersion, useMultiFileAuthState, UserFacingSocketConfig, WAMessage } from "@whiskeysockets/baileys";
-import { BaileysClient } from "../src/modules/baileys";
-import fs from 'fs/promises'
 
+import fs from 'fs/promises';
+import { downloadMediaMessage, WAMessage } from '@whiskeysockets/baileys';
+import { BaileysClient } from '../src/modules/baileys';
+import { Button } from '../src/types';
+
+// Mock do Baileys
 jest.mock('@whiskeysockets/baileys', () => ({
-    ...jest.requireActual('@whiskeysockets/baileys'),
-    makeWASocket: jest.fn(),
+    downloadMediaMessage: jest.fn(),
 }));
 
+// Mock do fs.promises
 jest.mock('fs/promises');
 
 describe('BaileysClient', () => {
-    let client: ReturnType<typeof makeWASocket>;
+    let clientMock: any;
     let baileysClient: BaileysClient;
     let mockMessage: WAMessage;
 
-    beforeEach(async () => {
-        const { state, saveCreds } = await useMultiFileAuthState('baileys_auth_info');
-        const { version } = await fetchLatestBaileysVersion();
-
-        const config: UserFacingSocketConfig = {
-            auth: state,
-            version,
-            printQRInTerminal: false,
+    beforeEach(() => {
+        clientMock = {
+            sendMessage: jest.fn(),
+            groupMetadata: jest.fn(),
         };
-
-        client = makeWASocket(config);
-        baileysClient = new BaileysClient(client);
+        baileysClient = new BaileysClient(clientMock);
         mockMessage = {
             key: { remoteJid: '12345' },
             message: { conversation: 'Hello' },
@@ -33,36 +30,49 @@ describe('BaileysClient', () => {
         baileysClient.setMessageObject(mockMessage);
     });
 
-    afterEach(() => {
-        jest.clearAllMocks();
-    });
-
     it('should set and get client', () => {
-        expect(baileysClient.getClient()).toBe(client);
+        expect(baileysClient.getClient()).toBe(clientMock);
     });
 
     it('should set and get message object', () => {
         expect(baileysClient.messageObject).toBe(mockMessage);
     });
 
+    it('should get quoted message', () => {
+        mockMessage.message = {
+            extendedTextMessage: {
+                contextInfo: { quotedMessage: { conversation: 'Quoted' } },
+            },
+        } as any;
+        expect(baileysClient.getQuotedMessage()).toEqual({ conversation: 'Quoted' });
+    });
+
     it('should reply to author', async () => {
-        client.sendMessage = jest.fn();
         await baileysClient.replyAuthor('Hello there');
-        expect(client.sendMessage).toHaveBeenCalledWith('12345', { text: 'Hello there' }, { quoted: mockMessage });
+        expect(clientMock.sendMessage).toHaveBeenCalledWith('12345', { text: 'Hello there' }, { quoted: mockMessage });
     });
 
     it('should send a message', async () => {
-        client.sendMessage = jest.fn();
         await baileysClient.sendMessage('Test message');
-        expect(client.sendMessage).toHaveBeenCalledWith('12345', { text: 'Test message' });
+        expect(clientMock.sendMessage).toHaveBeenCalledWith('12345', { text: 'Test message' });
+    });
+
+    it('should send buttons', async () => {
+        const buttons: Button[] = [{ id: '1', text: 'Button 1' }];
+        await baileysClient.sendButtons('Test caption', buttons, mockMessage, 'Test title');
+        expect(clientMock.sendMessage).toHaveBeenCalledWith('12345', {
+            text: 'Test caption',
+            buttons: [{ buttonId: '1', buttonText: { displayText: 'Button 1' }, type: 1 }],
+            footer: 'Test title',
+        });
     });
 
     it('should send a file', async () => {
-        client.sendMessage = jest.fn();
-        (fs.readFile as jest.Mock).mockResolvedValue(Buffer.from('file content'));
+        const fileContent = Buffer.from('file content');
+        (fs.readFile as jest.Mock).mockResolvedValue(fileContent);
         await baileysClient.sendFile('path/to/file', 'Test caption');
-        expect(client.sendMessage).toHaveBeenCalledWith('12345', {
-            document: Buffer.from('file content'),
+        expect(clientMock.sendMessage).toHaveBeenCalledWith('12345', {
+            document: fileContent,
             mimetype: 'application/octet-stream',
             fileName: 'file',
             caption: 'Test caption',
@@ -70,10 +80,10 @@ describe('BaileysClient', () => {
     });
 
     it('should send a song', async () => {
-        client.sendMessage = jest.fn();
-        (fs.readFile as jest.Mock).mockResolvedValue(Buffer.from('file content'));
+        const fileContent = Buffer.from('file content');
+        (fs.readFile as jest.Mock).mockResolvedValue(fileContent);
         await baileysClient.sendSong('path/to/file', 'Test caption');
-        expect(client.sendMessage).toHaveBeenCalledWith('12345', {
+        expect(clientMock.sendMessage).toHaveBeenCalledWith('12345', {
             audio: { url: 'path/to/file' },
             mimetype: 'audio/mp4',
             caption: 'Test caption',
@@ -81,34 +91,48 @@ describe('BaileysClient', () => {
     });
 
     it('should get media buffer from file', async () => {
-        (fs.readFile as jest.Mock).mockResolvedValue(Buffer.from('file content'));
+        const fileContent = Buffer.from('file content');
+        (fs.readFile as jest.Mock).mockResolvedValue(fileContent);
         const buffer = await baileysClient.getMediaBuffer('path/to/file');
-        expect(buffer).toEqual(Buffer.from('file content'));
+        expect(buffer).toEqual(fileContent);
     });
 
     it('should get media buffer from message', async () => {
-        (downloadMediaMessage as jest.Mock).mockResolvedValue(Buffer.from('media content'));
+        mockMessage.message = {
+            imageMessage: {
+                url: 'http://example.com/image.jpg',
+                mimetype: 'image/jpeg',
+            },
+        } as any;
+        
+        const mediaContent = Buffer.from('media content');
+        (downloadMediaMessage as jest.Mock).mockResolvedValue(mediaContent);
         const buffer = await baileysClient.getMediaBufferFromMessage();
-        expect(buffer).toEqual(Buffer.from('media content'));
+        expect(buffer).toEqual(mediaContent);
+    });
+
+    it('should convert buffer to base64', () => {
+        const buffer = Buffer.from('test');
+        const base64 = baileysClient.getBase64fromBuffer(buffer, 'application/octet-stream');
+        expect(base64).toEqual('data:application/octet-stream;base64,dGVzdA==');
     });
 
     it('should send a sticker', async () => {
-        client.sendMessage = jest.fn();
-        (fs.readFile as jest.Mock).mockResolvedValue(Buffer.from('file content'));
+        const fileContent = Buffer.from('file content');
+        (fs.readFile as jest.Mock).mockResolvedValue(fileContent);
         await baileysClient.sendSticker('path/to/file');
-        expect(client.sendMessage).toHaveBeenCalledWith('12345', { sticker: Buffer.from('file content') });
+        expect(clientMock.sendMessage).toHaveBeenCalledWith('12345', { sticker: fileContent });
     });
 
     it('should send a video sticker', async () => {
-        client.sendMessage = jest.fn();
-        await baileysClient.sendVideoSticker(Buffer.from('video content'), 'video/mp4');
-        expect(client.sendMessage).toHaveBeenCalledWith('12345', { sticker: Buffer.from('video content') });
+        const videoContent = Buffer.from('video content');
+        await baileysClient.sendVideoSticker(videoContent, 'video/mp4');
+        expect(clientMock.sendMessage).toHaveBeenCalledWith('12345', { sticker: videoContent });
     });
 
     it('should send a file from URL', async () => {
-        client.sendMessage = jest.fn();
         await baileysClient.sendFileFromUrl('http://example.com/file', 'file', mockMessage, 'Test caption');
-        expect(client.sendMessage).toHaveBeenCalledWith('12345', {
+        expect(clientMock.sendMessage).toHaveBeenCalledWith('12345', {
             document: { url: 'http://example.com/file' },
             mimetype: 'application/octet-stream',
             fileName: 'file',
@@ -117,19 +141,18 @@ describe('BaileysClient', () => {
     });
 
     it('should send an image from URL', async () => {
-        client.sendMessage = jest.fn();
         await baileysClient.sendImageFromUrl('http://example.com/image.jpg', 'Test caption', mockMessage);
-        expect(client.sendMessage).toHaveBeenCalledWith('12345', {
+        expect(clientMock.sendMessage).toHaveBeenCalledWith('12345', {
             image: { url: 'http://example.com/image.jpg' },
             caption: 'Test caption',
         });
     });
 
     it('should send a file from buffer', async () => {
-        client.sendMessage = jest.fn();
-        await baileysClient.sendFileFromBuffer(Buffer.from('file content'), 'application/octet-stream', 'Test caption', mockMessage);
-        expect(client.sendMessage).toHaveBeenCalledWith('12345', {
-            document: Buffer.from('file content'),
+        const fileContent = Buffer.from('file content');
+        await baileysClient.sendFileFromBuffer(fileContent, 'application/octet-stream', 'Test caption', mockMessage);
+        expect(clientMock.sendMessage).toHaveBeenCalledWith('12345', {
+            document: fileContent,
             mimetype: 'application/octet-stream',
             fileName: 'file',
             caption: 'Test caption',
@@ -137,9 +160,8 @@ describe('BaileysClient', () => {
     });
 
     it('should send a video', async () => {
-        client.sendMessage = jest.fn();
         await baileysClient.sendVideo('http://example.com/video.mp4', 'video', mockMessage, 'Test caption');
-        expect(client.sendMessage).toHaveBeenCalledWith('12345', {
+        expect(clientMock.sendMessage).toHaveBeenCalledWith('12345', {
             video: { url: 'http://example.com/video.mp4' },
             caption: 'Test caption',
             fileName: 'video',
@@ -147,11 +169,27 @@ describe('BaileysClient', () => {
     });
 
     it('should check if requester is admin', async () => {
-        client.groupMetadata = jest.fn().mockResolvedValue({
-            participants: [{ id: '12345', admin: true }],
-        });
+        const mockGroupMetadata = {
+            participants: [
+                { id: '12345', admin: 'admin' },
+                { id: '67890' },
+            ],
+        };
+        clientMock.groupMetadata.mockResolvedValue(mockGroupMetadata);
+        mockMessage.key.participant = '12345';
         const isAdmin = await baileysClient.isAdmin(mockMessage);
         expect(isAdmin).toBe(true);
     });
 
-})
+    it('should get mimetype based on file extension', () => {
+        expect(baileysClient['getMimeType']('file.mp4')).toBe('video/mp4');
+        expect(baileysClient['getMimeType']('file.gif')).toBe('image/gif');
+        expect(baileysClient['getMimeType']('file.jpeg')).toBe('image/jpeg');
+        expect(baileysClient['getMimeType']('file.jpg')).toBe('image/jpeg');
+        expect(baileysClient['getMimeType']('file.png')).toBe('image/png');
+        expect(baileysClient['getMimeType']('file.pdf')).toBe('application/pdf');
+        expect(baileysClient['getMimeType']('file.doc')).toBe('application/msword');
+        expect(baileysClient['getMimeType']('file.docx')).toBe('application/msword');
+        expect(baileysClient['getMimeType']('file.unknown')).toBe('application/octet-stream');
+    });
+});
