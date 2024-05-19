@@ -13,5 +13,8 @@
   "scripts": {
     "test": "jest",
     "test:watch": "jest --watch"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.2"
   }
 }
